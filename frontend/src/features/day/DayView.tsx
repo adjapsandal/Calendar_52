@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useWeek, useCreateDayTask, useUpdateDayTask, useDeleteDayTask } from "@/hooks/useApi";
 import { Spinner } from "@/components/ui/spinner";
-import { Button } from "@/components/ui/button";
 import NavBar from "@/components/NavBar";
 import type { DayTaskRead, WeekTaskRead } from "@/api";
 import { cn } from "@/lib/utils";
