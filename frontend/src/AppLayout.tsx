@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { authApi } from "@/api";
 
 export default function AppLayout() {
-  const { pathname } = useLocation();
+  useLocation();
   const navigate = useNavigate();
   const [checked, setChecked] = useState(false);
 
