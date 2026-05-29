@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   usePileItems,
   useCreatePileItem,
@@ -6,21 +6,30 @@ import {
   useUpdatePileItem,
   useDistribute,
   useApplyDistribution,
+  useYear,
 } from "@/hooks/useApi";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import NavBar from "@/components/NavBar";
-import type { DistributionSuggestion } from "@/api";
+import type { DistributionSuggestion, DistributionDepth } from "@/api";
 import DistributionProposal from "./DistributionProposal";
+
+const DEPTH_OPTIONS: { value: DistributionDepth; label: string; desc: string }[] = [
+  { value: 1, label: "Легкий", desc: "Только пометки" },
+  { value: 2, label: "Средний", desc: "Пометки + задачи" },
+  { value: 3, label: "Подробный", desc: "Пометки + задачи + дни" },
+];
 
 export default function PilePage() {
   const { data: items, isLoading } = usePileItems();
+  const { data: yearData } = useYear(new Date().getFullYear());
   const create = useCreatePileItem();
   const remove = useDeletePileItem();
   const distribute = useDistribute();
   const applyDistribution = useApplyDistribution();
 
   const [text, setText] = useState("");
+  const [depth, setDepth] = useState<DistributionDepth>(2);
   const [suggestions, setSuggestions] = useState<DistributionSuggestion[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -29,6 +38,19 @@ export default function PilePage() {
   const update = useUpdatePileItem();
 
   const pileMap = new Map(items?.map((i) => [i.id, i.content]) ?? []);
+
+  // week_id → display_position маппинг для отображения номеров недель
+  const weekMap = useMemo(() => {
+    const map = new Map<string, number>();
+    if (yearData?.quarters) {
+      for (const q of yearData.quarters) {
+        for (const w of q.weeks) {
+          map.set(w.id, w.display_position);
+        }
+      }
+    }
+    return map;
+  }, [yearData]);
 
   function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -65,7 +87,7 @@ export default function PilePage() {
 
   async function handleDistribute() {
     try {
-      const result = await distribute.mutateAsync(undefined);
+      const result = await distribute.mutateAsync({ depth });
       if (result.suggestions.length > 0) {
         setSuggestions(result.suggestions);
         setModalOpen(true);
@@ -86,6 +108,9 @@ export default function PilePage() {
           title: s.title,
           theme_id: s.theme_id,
           day_of_week: s.day_of_week,
+          item_type: s.item_type,
+          index: s.index,
+          parent_index: s.parent_index,
         }))
       );
       setModalOpen(false);
@@ -174,7 +199,24 @@ export default function PilePage() {
             ))}
           </div>
 
-          <div className="mt-6">
+          <div className="mt-6 space-y-3">
+            <div className="flex gap-2">
+              {DEPTH_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => setDepth(opt.value)}
+                  className={`flex-1 rounded-lg border p-2.5 text-left transition-all ${
+                    depth === opt.value
+                      ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                      : "border-gray-200 hover:border-gray-300 bg-white"
+                  }`}
+                >
+                  <div className="text-xs font-medium">{opt.label}</div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+
             <Button
               onClick={handleDistribute}
               disabled={distribute.isPending}
@@ -182,7 +224,7 @@ export default function PilePage() {
             >
               {distribute.isPending ? "ИИ анализирует..." : "Распределить по плану"}
             </Button>
-            <p className="text-[10px] text-muted-foreground text-center mt-2">
+            <p className="text-[10px] text-muted-foreground text-center">
               ИИ проанализирует Кучу и предложит распределение
             </p>
           </div>
@@ -199,6 +241,7 @@ export default function PilePage() {
         onClose={() => setModalOpen(false)}
         suggestions={suggestions}
         pileMap={pileMap}
+        weekMap={weekMap}
         onApply={handleApply}
         applying={applying}
       />

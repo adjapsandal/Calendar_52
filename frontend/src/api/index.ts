@@ -56,6 +56,8 @@ export interface SettingsRead {
   hard_protection: boolean;
 }
 
+export type DistributionDepth = 1 | 2 | 3;
+
 export interface DistributionSuggestion {
   pile_item_id: string;
   target_week_id: string;
@@ -64,7 +66,9 @@ export interface DistributionSuggestion {
   theme_id: string | null;
   reasoning: string;
   day_of_week: number;
-  item_type?: "week_task" | "day_task" | "mark";
+  item_type: "week_task" | "day_task" | "mark";
+  index: number;
+  parent_index: number;
 }
 
 export interface DistributeResponse {
@@ -215,9 +219,20 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ChatOperation {
+  action: "move" | "delete" | "create" | "update_status";
+  item_type: "week_task" | "day_task" | "mark";
+  item_id: string | null;
+  item_title: string;
+  target_week_id: string | null;
+  new_status: string | null;
+  day_of_week: number;
+  reasoning: string;
+}
+
 export interface ChatResponse {
   reply: string;
-  suggestions?: DistributionSuggestion[];
+  operations?: ChatOperation[];
 }
 
 export const chatApi = {
@@ -230,9 +245,9 @@ export const pileApi = {
   create: (content: string) => api.post<PileItemRead>("/pile/items", { content }),
   update: (itemId: string, content: string) => api.patch<PileItemRead>(`/pile/items/${itemId}`, { content }),
   delete: (itemId: string) => api.delete(`/pile/items/${itemId}`),
-  distribute: (pile_item_ids?: string[]) =>
-    api.post<DistributeResponse>("/pile/distribute", pile_item_ids ? { pile_item_ids } : {}),
-  apply: (items: { pile_item_id: string; target_week_id: string; as_mark: boolean; title: string; theme_id?: string | null; day_of_week?: number }[]) =>
+  distribute: (pile_item_ids?: string[], depth?: DistributionDepth) =>
+    api.post<DistributeResponse>("/pile/distribute", { pile_item_ids, depth: depth ?? 2 }),
+  apply: (items: { pile_item_id: string; target_week_id: string; as_mark: boolean; title: string; theme_id?: string | null; day_of_week?: number; item_type?: string; index?: number; parent_index?: number }[]) =>
     api.post("/pile/distribute/apply", { items }),
 };
 

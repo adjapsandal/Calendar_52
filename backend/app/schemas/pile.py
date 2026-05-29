@@ -1,7 +1,14 @@
 from datetime import datetime
+from enum import IntEnum
 from uuid import UUID
 
 from pydantic import BaseModel
+
+
+class DistributionDepth(IntEnum):
+    STRATEGIC = 1   # Лёгкий — только пометки
+    TACTICAL = 2    # Средний — пометки + задачи недели
+    DETAILED = 3    # Подробный — пометки + задачи недели + задачи дня
 
 
 class PileItemCreate(BaseModel):
@@ -23,6 +30,7 @@ class PileItemRead(BaseModel):
 
 class DistributeRequest(BaseModel):
     pile_item_ids: list[UUID] | None = None
+    depth: DistributionDepth = DistributionDepth.TACTICAL
 
 
 class DistributionSuggestion(BaseModel):
@@ -33,7 +41,9 @@ class DistributionSuggestion(BaseModel):
     theme_id: UUID | None = None
     reasoning: str
     day_of_week: int = -1
-    item_type: str | None = None
+    item_type: str = "week_task"  # "mark" | "week_task" | "day_task"
+    index: int = 0
+    parent_index: int = -1  # -1 = root (mark)
 
 
 class DistributeResponse(BaseModel):
@@ -47,6 +57,9 @@ class ApplySuggestion(BaseModel):
     title: str
     theme_id: UUID | None = None
     day_of_week: int = -1
+    item_type: str = "week_task"
+    index: int = 0
+    parent_index: int = -1
 
 
 class ApplyRequest(BaseModel):

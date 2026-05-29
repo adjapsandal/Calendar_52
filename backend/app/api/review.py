@@ -152,7 +152,7 @@ async def reflect(
     client = get_anthropic_client()
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-4.5",
             max_tokens=2048,
             tools=[REVIEW_TOOL],
             messages=[{"role": "user", "content": user_prompt}],

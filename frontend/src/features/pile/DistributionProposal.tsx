@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -14,37 +14,54 @@ interface Props {
   onClose: () => void;
   suggestions: DistributionSuggestion[];
   pileMap: Map<string, string>;
+  weekMap?: Map<string, number>; // week_id → display_position
   onApply: (selected: DistributionSuggestion[]) => void;
   applying: boolean;
 }
 
-interface Group {
-  pile_item_id: string;
-  suggestions: DistributionSuggestion[];
-  indices: number[];
+interface SuggestionNode extends DistributionSuggestion {
+  children: SuggestionNode[];
 }
 
-function buildGroups(suggestions: DistributionSuggestion[]): Group[] {
-  const map = new Map<string, Group>();
-  suggestions.forEach((s, i) => {
-    const key = s.pile_item_id;
-    if (!map.has(key)) {
-      map.set(key, { pile_item_id: key, suggestions: [], indices: [] });
-    }
-    const g = map.get(key)!;
-    g.suggestions.push(s);
-    g.indices.push(i);
-  });
-  return Array.from(map.values());
-}
+function buildTree(suggestions: DistributionSuggestion[]): SuggestionNode[] {
+  const nodeMap = new Map<number, SuggestionNode>();
+  const roots: SuggestionNode[] = [];
 
-function typeLabel(s: DistributionSuggestion): string {
-  if (s.as_mark) return "Пометка";
-  if (s.day_of_week >= 0) {
-    const days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
-    return `Задача дня (${days[s.day_of_week] ?? s.day_of_week})`;
+  for (const s of suggestions) {
+    nodeMap.set(s.index, { ...s, children: [] });
   }
-  return "Задача недели";
+
+  for (const s of suggestions) {
+    const node = nodeMap.get(s.index)!;
+    if (s.parent_index === -1 || s.parent_index === undefined) {
+      roots.push(node);
+    } else {
+      const parent = nodeMap.get(s.parent_index);
+      if (parent) {
+        parent.children.push(node);
+      } else {
+        roots.push(node);
+      }
+    }
+  }
+
+  return roots;
+}
+
+const TYPE_CONFIG: Record<string, { icon: string; label: string }> = {
+  mark: { icon: "🏷️", label: "Пометка" },
+  week_task: { icon: "📋", label: "Задача недели" },
+  day_task: { icon: "📌", label: "Задача дня" },
+};
+
+const DAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+function collectIndices(node: SuggestionNode): number[] {
+  const result = [node.index];
+  for (const child of node.children) {
+    result.push(...collectIndices(child));
+  }
+  return result;
 }
 
 export default function DistributionProposal({
@@ -52,137 +69,82 @@ export default function DistributionProposal({
   onClose,
   suggestions,
   pileMap,
+  weekMap,
   onApply,
   applying,
 }: Props) {
-  const [checked, setChecked] = useState<Set<string>>(
-    () => new Set(suggestions.map((_, i) => String(i)))
+  const [checked, setChecked] = useState<Set<number>>(
+    () => new Set(suggestions.map((s) => s.index))
   );
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const groups = buildGroups(suggestions);
+  const tree = useMemo(() => buildTree(suggestions), [suggestions]);
 
-  function toggleItem(index: number) {
+  // Группируем корневые по pile_item_id
+  const groups = useMemo(() => {
+    const map = new Map<string, SuggestionNode[]>();
+    for (const root of tree) {
+      const key = root.pile_item_id;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(root);
+    }
+    return Array.from(map.entries());
+  }, [tree]);
+
+  function toggleNode(node: SuggestionNode) {
+    const indices = collectIndices(node);
     setChecked((prev) => {
       const next = new Set(prev);
-      const key = String(index);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  function isGroupChecked(group: Group): boolean {
-    return group.indices.every((i) => checked.has(String(i)));
-  }
-
-  function isGroupPartial(group: Group): boolean {
-    const some = group.indices.some((i) => checked.has(String(i)));
-    const all = group.indices.every((i) => checked.has(String(i)));
-    return some && !all;
-  }
-
-  function toggleGroup(group: Group) {
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (isGroupChecked(group)) {
-        group.indices.forEach((i) => next.delete(String(i)));
+      const allChecked = indices.every((i) => next.has(i));
+      if (allChecked) {
+        indices.forEach((i) => next.delete(i));
       } else {
-        group.indices.forEach((i) => next.add(String(i)));
+        indices.forEach((i) => next.add(i));
       }
       return next;
     });
   }
 
-  function toggleExpand(pile_item_id: string) {
-    setExpanded((prev) => {
+  function toggleSingle(index: number) {
+    setChecked((prev) => {
       const next = new Set(prev);
-      if (next.has(pile_item_id)) next.delete(pile_item_id);
-      else next.add(pile_item_id);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
       return next;
     });
   }
 
-  const selected = suggestions.filter((_, i) => checked.has(String(i)));
+  const selected = suggestions.filter((s) => checked.has(s.index));
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-3xl w-[90vw] max-h-[92vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>ИИ-предложение: {groups.length} записей</DialogTitle>
+          <DialogTitle>ИИ-предложение: {suggestions.length} элементов</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col gap-2 py-2">
-          {groups.map((group) => {
-            const isMulti = group.suggestions.length > 1;
-            const isExp = expanded.has(group.pile_item_id);
-            const allChecked = isGroupChecked(group);
-            const partial = isGroupPartial(group);
-            const pileContent = pileMap.get(group.pile_item_id) ?? group.suggestions[0]?.title ?? "???";
-            const first = group.suggestions[0];
-
+        <div className="flex flex-col gap-3 py-2">
+          {groups.map(([pileId, roots]) => {
+            const pileContent = pileMap.get(pileId) ?? "???";
             return (
-              <div key={group.pile_item_id} className="rounded-lg border overflow-hidden">
-                {/* Group header row */}
-                <label
-                  className={`flex items-start gap-3 p-3 cursor-pointer transition-colors ${
-                    allChecked ? "bg-primary/5 border-b-primary/20" : partial ? "bg-yellow-50/50" : "opacity-60"
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={allChecked}
-                    ref={(el) => { if (el) el.indeterminate = partial; }}
-                    onChange={() => toggleGroup(group)}
-                    className="mt-0.5 flex-shrink-0"
-                  />
-                  <div className="flex-1 min-w-0">
-                    {pileContent !== first.title && (
-                      <p className="text-xs text-muted-foreground mb-1 truncate">
-                        Исходник: {pileContent}
-                      </p>
-                    )}
-                    <p className="text-sm font-medium">{first.title}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {typeLabel(first)}
-                      {!isMulti && ` · ${first.reasoning}`}
-                    </p>
-                  </div>
-                  {isMulti && (
-                    <button
-                      onClick={(e) => { e.preventDefault(); toggleExpand(group.pile_item_id); }}
-                      className="flex-shrink-0 text-xs text-muted-foreground hover:text-primary px-2 py-0.5 rounded border border-gray-200 hover:border-primary/40 transition-colors"
-                    >
-                      × {group.suggestions.length} нед. {isExp ? "▴" : "▾"}
-                    </button>
-                  )}
-                </label>
-
-                {/* Sub-rows for recurring items */}
-                {isMulti && isExp && (
-                  <div className="flex flex-col divide-y">
-                    {group.suggestions.map((s, localIdx) => {
-                      const globalIdx = group.indices[localIdx];
-                      const isCh = checked.has(String(globalIdx));
-                      return (
-                        <label
-                          key={globalIdx}
-                          className={`flex items-center gap-3 px-4 py-2 cursor-pointer transition-colors text-sm ${
-                            isCh ? "bg-white" : "opacity-50 bg-gray-50"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isCh}
-                            onChange={() => toggleItem(globalIdx)}
-                            className="flex-shrink-0"
-                          />
-                          <span className="text-xs text-muted-foreground">{s.reasoning}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
+              <div key={pileId} className="rounded-lg border overflow-hidden">
+                <div className="px-3 py-2 bg-gray-50 border-b">
+                  <p className="text-xs text-muted-foreground truncate">
+                    Из Кучи: {pileContent}
+                  </p>
+                </div>
+                <div className="flex flex-col">
+                  {roots.map((root) => (
+                    <NodeRow
+                      key={root.index}
+                      node={root}
+                      depth={0}
+                      checked={checked}
+                      weekMap={weekMap}
+                      onToggleNode={toggleNode}
+                      onToggleSingle={toggleSingle}
+                    />
+                  ))}
+                </div>
               </div>
             );
           })}
@@ -199,11 +161,87 @@ export default function DistributionProposal({
             {applying
               ? "Применяем..."
               : checked.size === suggestions.length
-              ? "Принять всё"
+              ? "Принять все"
               : `Применить ${checked.size} из ${suggestions.length}`}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function NodeRow({
+  node,
+  depth,
+  checked,
+  weekMap,
+  onToggleNode,
+  onToggleSingle,
+}: {
+  node: SuggestionNode;
+  depth: number;
+  checked: Set<number>;
+  weekMap?: Map<string, number>;
+  onToggleNode: (node: SuggestionNode) => void;
+  onToggleSingle: (index: number) => void;
+}) {
+  const cfg = TYPE_CONFIG[node.item_type] ?? TYPE_CONFIG.week_task;
+  const isChecked = checked.has(node.index);
+  const hasChildren = node.children.length > 0;
+  const allChildrenChecked = hasChildren && collectIndices(node).every((i) => checked.has(i));
+  const someChildrenChecked = hasChildren && collectIndices(node).some((i) => checked.has(i));
+  const isPartial = someChildrenChecked && !allChildrenChecked;
+
+  const weekNum = weekMap?.get(node.target_week_id);
+
+  const paddingLeft = depth * 24;
+
+  return (
+    <>
+      <label
+        style={{ paddingLeft: paddingLeft + 12 }}
+        className={`flex items-start gap-2 py-2 pr-3 cursor-pointer transition-colors ${
+          isChecked ? "bg-white" : "opacity-50 bg-gray-50"
+        } ${depth === 0 ? "border-b last:border-b-0" : ""}`}
+      >
+        <input
+          type="checkbox"
+          checked={hasChildren ? allChildrenChecked : isChecked}
+          ref={(el) => { if (el && hasChildren) el.indeterminate = isPartial; }}
+          onChange={() => hasChildren ? onToggleNode(node) : onToggleSingle(node.index)}
+          className="mt-0.5 flex-shrink-0"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs">{cfg.icon}</span>
+            <span className="text-sm font-medium">{node.title}</span>
+            {weekNum != null && (
+              <span className="text-[10px] text-blue-600 bg-blue-50 px-1 rounded">
+                Н{weekNum}
+              </span>
+            )}
+            {node.item_type === "day_task" && node.day_of_week >= 0 && (
+              <span className="text-[10px] text-muted-foreground bg-gray-100 px-1 rounded">
+                {DAY_NAMES[node.day_of_week]}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {cfg.label} {node.reasoning && `· ${node.reasoning}`}
+          </p>
+        </div>
+      </label>
+      {node.children.map((child) => (
+        <NodeRow
+          key={child.index}
+          node={child}
+          depth={depth + 1}
+          checked={checked}
+          weekMap={weekMap}
+          onToggleNode={onToggleNode}
+          onToggleSingle={onToggleSingle}
+        />
+      ))}
+    </>
   );
 }

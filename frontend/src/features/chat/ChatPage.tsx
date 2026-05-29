@@ -1,22 +1,22 @@
 import { useState, useRef, useEffect } from "react";
 import NavBar from "@/components/NavBar";
 import { Button } from "@/components/ui/button";
-import { chatApi, weekTaskApi, dayTaskApi, markApi, type ChatMessage, type DistributionSuggestion } from "@/api";
-import DistributionProposal from "@/features/pile/DistributionProposal";
+import { chatApi, weekTaskApi, dayTaskApi, markApi, type ChatMessage, type ChatOperation } from "@/api";
+import ChatProposal from "@/features/chat/ChatProposal";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
-  suggestions?: DistributionSuggestion[];
+  operations?: ChatOperation[];
 }
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", content: "Привет! Я помогу тебе с планированием. Можешь спросить о стратегии на неделю, попросить совета или попросить перенести задачи." },
+    { role: "assistant", content: "Привет! Я помогу тебе с планированием. Можешь спросить о стратегии на неделю, попросить перенести, удалить, создать задачу или изменить её статус." },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [modalSuggestions, setModalSuggestions] = useState<DistributionSuggestion[]>([]);
+  const [modalOps, setModalOps] = useState<ChatOperation[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [applying, setApplying] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -44,7 +44,7 @@ export default function ChatPage() {
       const assistantMsg: Message = {
         role: "assistant",
         content: data.reply,
-        suggestions: data.suggestions,
+        operations: data.operations,
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch {
@@ -64,28 +64,47 @@ export default function ChatPage() {
     }
   }
 
-  function openSuggestions(suggestions: DistributionSuggestion[]) {
-    setModalSuggestions(suggestions);
+  function openOperations(ops: ChatOperation[]) {
+    setModalOps(ops);
     setModalOpen(true);
   }
 
-  async function handleApply(selected: DistributionSuggestion[]) {
+  async function handleApply(selected: ChatOperation[]) {
     setApplying(true);
     try {
       await Promise.all(
-        selected.map((s) => {
-          if (s.item_type === "mark") return markApi.move(s.pile_item_id, s.target_week_id);
-          if (s.item_type === "day_task") return dayTaskApi.move(s.pile_item_id, s.target_week_id);
-          return weekTaskApi.move(s.pile_item_id, s.target_week_id);
+        selected.map((op) => {
+          switch (op.action) {
+            case "delete":
+              if (op.item_type === "mark") return markApi.delete(op.item_id!);
+              if (op.item_type === "day_task") return dayTaskApi.delete(op.item_id!);
+              return weekTaskApi.delete(op.item_id!);
+
+            case "move":
+              if (op.item_type === "mark") return markApi.move(op.item_id!, op.target_week_id!);
+              if (op.item_type === "day_task") return dayTaskApi.move(op.item_id!, op.target_week_id!);
+              return weekTaskApi.move(op.item_id!, op.target_week_id!);
+
+            case "create":
+              if (op.item_type === "mark") return markApi.create(op.target_week_id!, { title: op.item_title });
+              if (op.item_type === "day_task") return dayTaskApi.create(op.target_week_id!, op.day_of_week, { title: op.item_title });
+              return weekTaskApi.create(op.target_week_id!, { title: op.item_title });
+
+            case "update_status":
+              if (op.item_type === "day_task") return dayTaskApi.update(op.item_id!, { status: op.new_status! });
+              return weekTaskApi.update(op.item_id!, { status: op.new_status! });
+          }
         })
       );
       setModalOpen(false);
+
+      const actionSummary = summarizeActions(selected);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Готово! Задачи перенесены." },
+        { role: "assistant", content: `Готово! ${actionSummary}` },
       ]);
     } catch {
-      alert("Ошибка при переносе задач");
+      alert("Ошибка при выполнении операций");
     } finally {
       setApplying(false);
     }
@@ -111,14 +130,14 @@ export default function ChatPage() {
               }`}
             >
               <p className="whitespace-pre-wrap">{m.content}</p>
-              {m.suggestions && m.suggestions.length > 0 && (
+              {m.operations && m.operations.length > 0 && (
                 <Button
                   size="sm"
                   variant="outline"
                   className="mt-2 text-xs"
-                  onClick={() => openSuggestions(m.suggestions!)}
+                  onClick={() => openOperations(m.operations!)}
                 >
-                  Просмотреть предложения ({m.suggestions.length})
+                  Просмотреть предложения ({m.operations.length})
                 </Button>
               )}
             </div>
@@ -156,14 +175,26 @@ export default function ChatPage() {
         </div>
       </div>
 
-      <DistributionProposal
+      <ChatProposal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
-        suggestions={modalSuggestions}
-        pileMap={new Map(modalSuggestions.map((s) => [s.pile_item_id, s.title]))}
+        operations={modalOps}
         onApply={handleApply}
         applying={applying}
       />
     </div>
   );
+}
+
+function summarizeActions(ops: ChatOperation[]): string {
+  const counts: Record<string, number> = {};
+  for (const op of ops) {
+    counts[op.action] = (counts[op.action] || 0) + 1;
+  }
+  const parts: string[] = [];
+  if (counts.delete) parts.push(`удалено: ${counts.delete}`);
+  if (counts.move) parts.push(`перенесено: ${counts.move}`);
+  if (counts.create) parts.push(`создано: ${counts.create}`);
+  if (counts.update_status) parts.push(`обновлено: ${counts.update_status}`);
+  return parts.join(", ") + ".";
 }
