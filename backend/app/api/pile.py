@@ -15,6 +15,7 @@ from app.schemas.pile import (
     ApplyRequest,
     DistributeRequest,
     DistributeResponse,
+    DistributionDepth,
     DistributionSuggestion,
     PileItemCreate,
     PileItemRead,
@@ -29,7 +30,7 @@ _rate_limit: dict[str, tuple[int, float]] = {}
 
 DISTRIBUTION_TOOL = {
     "name": "distribute_pile",
-    "description": "Распределяет записи из Кучи по неделям плана.",
+    "description": "Распределяет записи из Кучи по неделям плана в виде иерархии: пометки → задачи недели → задачи дня.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -38,42 +39,47 @@ DISTRIBUTION_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
+                        "index": {
+                            "type": "integer",
+                            "description": "Порядковый номер этого элемента в массиве (0-based, последовательно)",
+                        },
                         "pile_item_index": {
                             "type": "integer",
                             "description": "Индекс записи из массива pile_items (0-based)",
                         },
+                        "item_type": {
+                            "type": "string",
+                            "enum": ["mark", "week_task", "day_task"],
+                            "description": "Тип создаваемого элемента",
+                        },
+                        "parent_index": {
+                            "type": "integer",
+                            "description": "-1 для корневых пометок (mark). Для week_task: index родительской пометки. Для day_task: index родительской задачи недели.",
+                        },
                         "target_week_position": {
                             "type": "integer",
-                            "description": "display_position первой недели (1-52)",
-                        },
-                        "as_mark": {
-                            "type": "boolean",
-                            "description": "True — создать пометку (широкая тема/направление, несколько задач). False — конкретное действие (задача).",
-                        },
-                        "day_of_week": {
-                            "type": "integer",
-                            "description": "Если запись содержит конкретный день недели — индекс (0=Пн, 1=Вт, 2=Ср, 3=Чт, 4=Пт, 5=Сб, 6=Вс). -1 если конкретного дня нет. Используй только когда as_mark=false.",
+                            "description": "display_position недели (1-52)",
                         },
                         "title": {
                             "type": "string",
-                            "description": "Короткое название для пометки/задачи",
+                            "description": "Короткое название для элемента",
                         },
                         "theme_index": {
                             "type": "integer",
                             "description": "Индекс темы из массива themes (0-based) или -1 если нет подходящей",
                         },
+                        "day_of_week": {
+                            "type": "integer",
+                            "description": "День недели 0-6 (Пн-Вс). Только для day_task. Для остальных -1.",
+                        },
                         "reasoning": {
                             "type": "string",
-                            "description": "Почему именно эта неделя (1 предложение на русском)",
-                        },
-                        "repeat_every_weeks": {
-                            "type": "integer",
-                            "description": "Если запись повторяется с периодичностью — интервал в неделях (например 3). 0 означает разовое событие.",
+                            "description": "Почему именно эта неделя/действие (1 предложение на русском)",
                         },
                     },
                     "required": [
-                        "pile_item_index", "target_week_position", "as_mark",
-                        "title", "theme_index", "reasoning", "repeat_every_weeks", "day_of_week",
+                        "index", "pile_item_index", "item_type", "parent_index",
+                        "target_week_position", "title", "theme_index", "day_of_week", "reasoning",
                     ],
                 },
             }
@@ -231,37 +237,112 @@ async def distribute(
     current_week_position = ((now - (jan4 - timedelta(days=dow - 1))).days // 7) + 1
     current_week_position = min(max(current_week_position, 1), 52)
 
-    user_prompt = f"""Ты — ИИ-помощник для планирования года. Распредели записи из «Кучи» по неделям.
+    depth = body.depth if body else DistributionDepth.TACTICAL
 
-## Записи из Кучи (pile_items):
+    depth_instructions = {
+        DistributionDepth.STRATEGIC: """## Режим: ЛЁГКИЙ (только пометки)
+Создавай ТОЛЬКО элементы с item_type="mark" и parent_index=-1.
+НЕ создавай week_task и day_task.
+Для каждой записи создай 1-4 пометки на разных неделях — это высокоуровневые направления/темы.
+Пример: «набрать 10 кг» → пометка «Программа тренировок» на нед.23, пометка «План питания» на нед.24, пометка «Контроль прогресса» на нед.25.""",
+
+        DistributionDepth.TACTICAL: """## Режим: СРЕДНИЙ (пометки + задачи недели)
+Создавай элементы двух типов: mark и week_task.
+
+Структура:
+1. Создай пометку (item_type="mark", parent_index=-1) — это тематическое направление
+2. Под ней задачи недели (item_type="week_task", parent_index=index этой пометки)
+
+ВАЖНО:
+- Родительская пометка ОБЯЗАТЕЛЬНО должна идти в массиве РАНЬШЕ своих дочерних задач (меньший index).
+- Задачи МОГУТ быть на ДРУГИХ неделях, чем их родительская пометка! Пометка автоматически продублируется на каждую неделю.
+- Для долгосрочных целей (1+ месяц) ОБЯЗАТЕЛЬНО распределяй задачи по разным неделям на весь период.
+НЕ создавай day_task.
+
+Пример для «набрать 10 кг за 2 месяца» (текущая неделя 23):
+  index=0: mark «Программа набора массы», parent_index=-1, неделя 23
+  index=1: week_task «Составить план тренировок и питания», parent_index=0, неделя 23
+  index=2: week_task «Начать тренировки по программе», parent_index=0, неделя 24
+  index=3: week_task «Контрольное взвешивание», parent_index=0, неделя 27
+  index=4: week_task «Коррекция программы», parent_index=0, неделя 29
+  index=5: week_task «Итоговые результаты», parent_index=0, неделя 31""",
+
+        DistributionDepth.DETAILED: """## Режим: ПОДРОБНЫЙ (пометки + задачи недели + задачи дня)
+Создавай элементы трёх типов: mark, week_task, day_task.
+
+Структура (3 уровня):
+1. Пометка (item_type="mark", parent_index=-1) — тематическое направление
+2. Под ней задачи недели (item_type="week_task", parent_index=index пометки)
+3. Под каждой задачей недели 1-2 задачи дня (item_type="day_task", parent_index=index задачи недели)
+   Для day_task указывай day_of_week (0=Пн, 1=Вт, 2=Ср, 3=Чт, 4=Пт, 5=Сб, 6=Вс).
+
+ВАЖНО:
+- Родители ОБЯЗАТЕЛЬНО идут в массиве РАНЬШЕ детей.
+- Задачи МОГУТ быть на ДРУГИХ неделях, чем пометка! Пометка автоматически продублируется.
+- Для долгосрочных целей (1+ месяц) ОБЯЗАТЕЛЬНО распределяй задачи по разным неделям.
+- day_task ДОЛЖЕН быть на той же неделе, что и его родительский week_task.
+- Распределяй задачи дня по разным дням, не перегружай один день.
+
+Пример:
+  index=0: mark «Программа набора массы», parent_index=-1, нед.23
+  index=1: week_task «Составить план», parent_index=0, нед.23
+  index=2: day_task «Рассчитать калории», parent_index=1, нед.23, day_of_week=0 (Пн)
+  index=3: day_task «Выбрать программу», parent_index=1, нед.23, day_of_week=2 (Ср)
+  index=4: week_task «Начать тренировки», parent_index=0, нед.24
+  index=5: day_task «Первая тренировка», parent_index=4, нед.24, day_of_week=0 (Пн)""",
+    }
+
+    user_prompt = f"""Ты — ИИ-планировщик в приложении «Календарь 52» для стратегического планирования года по методологии Weekly Thinking.
+Твоя задача: проанализировать записи из «Кучи», понять намерение пользователя и превратить их в конкретный план действий, распределённый по неделям.
+
+{depth_instructions[depth]}
+
+## Классификация записей
+Перед распределением определи тип каждой записи:
+
+ТИП 1 — КОНКРЕТНОЕ ДЕЙСТВИЕ (чёткое одноразовое действие с понятным результатом).
+Примеры: «записаться к стоматологу», «купить подарок маме».
+→ Создай 1 пометку + 1 задачу (или только пометку в лёгком режиме).
+
+ТИП 2 — ЦЕЛЬ / НАМЕРЕНИЕ (абстрактное желание или долгосрочная цель).
+Примеры: «набрать 15 кг мышечной массы», «выучить английский до B2».
+→ Декомпозируй в несколько пометок на разных неделях с задачами под каждой.
+  Шаги должны быть конкретными действиями, НЕ повторением исходной записи.
+
+ТИП 3 — ПОВТОРЯЮЩЕЕСЯ ДЕЙСТВИЕ (действие с периодичностью).
+Примеры: «ходить в зал 3 раза в неделю».
+→ Создай пометки на нескольких неделях с одинаковой задачей.
+
+## Данные
+
+Записи из Кучи (pile_items):
 {json.dumps(pile_texts, ensure_ascii=False, indent=2)}
 
-## Темы пользователя (themes):
+Темы пользователя (themes):
 {json.dumps(theme_list, ensure_ascii=False, indent=2)}
 
-## Недели года (weeks) — поле date_range показывает диапазон (Пн–Вс), поле days — конкретные даты каждого дня (0=Пн..6=Вс):
+Недели года (weeks) — date_range = диапазон (Пн–Вс), days = конкретные даты, cached_load = текущая нагрузка:
 {json.dumps(week_list, ensure_ascii=False, indent=2)}
 
-## Текущая дата: {now.strftime("%Y-%m-%d")} (неделя #{current_week_position})
+Текущая дата: {now.strftime("%Y-%m-%d")} (неделя #{current_week_position})
 
 ## Правила:
 1. НЕ предлагай прошлые недели (display_position < {current_week_position}).
-2. НЕ предлагай выходные недели (is_rest_week=true).
-3. Предпочитай недели с меньшей нагрузкой (cached_load).
-4. Бюджет недели — 10 задач. Не перегружай.
-5. as_mark=true если это широкая тема/направление (несколько задач). as_mark=false — конкретное действие.
-6. Если as_mark=false и в записи указана конкретная дата или день недели — установи day_of_week (0=Пн..6=Вс) и выбери неделю так, чтобы поле days[day_of_week] точно совпало с упомянутой датой. Иначе day_of_week=-1.
-7. Если запись не подходит ни под одну тему — theme_index = -1.
-8. Каждой записи из Кучи — ровно одно предложение.
-8. Используй date_range для сопоставления дат из записей с нужной неделей.
-9. Если запись содержит повторяющееся действие (например «раз в 3 недели», «каждые 2 недели»), установи repeat_every_weeks в нужное значение. Тогда задача будет автоматически поставлена на несколько недель вперёд с таким интервалом.
-10. Отвечай на русском."""
+2. НЕ предлагай недели отдыха (is_rest_week=true).
+3. Предпочитай недели с меньшей нагрузкой (cached_load). Бюджет недели — 10 задач.
+4. Если запись не подходит ни под одну тему — theme_index=-1.
+5. index ОБЯЗАТЕЛЬНО последовательный: 0, 1, 2, 3...
+6. Задачи недели (week_task) и задачи дня (day_task) МОГУТ быть на ДРУГИХ неделях, чем их родительская пометка. Если цель растянута на несколько недель — размещай задачи на соответствующих неделях. Пометка автоматически продублируется на каждую неделю, где есть её дочерние задачи.
+7. Отвечай на русском.
+8. Для долгосрочных целей (месяц+) ОБЯЗАТЕЛЬНО распределяй задачи по разным неделям в указанном временном периоде.
+
+ОБЯЗАТЕЛЬНО вызови инструмент distribute_pile с результатом."""
 
     client = get_anthropic_client()
     start = time.time()
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-4.5",
             max_tokens=4096,
             tools=[DISTRIBUTION_TOOL],
             messages=[{"role": "user", "content": user_prompt}],
@@ -283,11 +364,15 @@ async def distribute(
         raise HTTPException(503, "ИИ вернул неожиданный ответ")
 
     raw_suggestions = tool_block.input.get("suggestions", [])
+    logger.info("AI raw suggestions (%d):\n%s", len(raw_suggestions), json.dumps(raw_suggestions, ensure_ascii=False, indent=2))
+
+    # Валидация и нормализация
+    raw_suggestions = _validate_suggestions(raw_suggestions, depth)
 
     week_by_pos = {w.display_position: w for w in weeks}
 
     suggestions = []
-    for raw in raw_suggestions:
+    for i, raw in enumerate(raw_suggestions):
         idx = raw.get("pile_item_index", -1)
         if idx < 0 or idx >= len(pile_items):
             continue
@@ -300,36 +385,102 @@ async def distribute(
         theme_idx = raw.get("theme_index", -1)
         theme_id = themes[theme_idx].id if 0 <= theme_idx < len(themes) else None
 
-        repeat = max(0, int(raw.get("repeat_every_weeks", 0)))
-        positions_to_add = [pos]
-        if repeat > 0:
-            next_pos = pos + repeat
-            while next_pos <= 52:
-                candidate = week_by_pos.get(next_pos)
-                if candidate and not candidate.is_rest_week:
-                    positions_to_add.append(next_pos)
-                next_pos += repeat
+        item_type = raw.get("item_type", "mark")
+        as_mark = item_type == "mark"
 
-        for week_pos in positions_to_add:
-            week_for_pos = week_by_pos.get(week_pos)
-            if not week_for_pos:
-                continue
-            reasoning = raw.get("reasoning", "")
-            if len(positions_to_add) > 1:
-                reasoning = f"Повтор каждые {repeat} нед. · " + reasoning
-            suggestions.append(
-                DistributionSuggestion(
-                    pile_item_id=pile_items[idx].id,
-                    target_week_id=week_for_pos.id,
-                    as_mark=raw.get("as_mark", False),
-                    title=raw.get("title", pile_items[idx].content[:100]),
-                    theme_id=theme_id,
-                    reasoning=reasoning,
-                    day_of_week=int(raw.get("day_of_week", -1)),
-                )
+        suggestions.append(
+            DistributionSuggestion(
+                pile_item_id=pile_items[idx].id,
+                target_week_id=week_obj.id,
+                as_mark=as_mark,
+                title=raw.get("title", pile_items[idx].content[:100]),
+                theme_id=theme_id,
+                reasoning=raw.get("reasoning", ""),
+                day_of_week=int(raw.get("day_of_week", -1)),
+                item_type=item_type,
+                index=raw.get("index", i),
+                parent_index=raw.get("parent_index", -1),
             )
+        )
 
     return DistributeResponse(suggestions=suggestions)
+
+
+def _validate_suggestions(raw: list[dict], depth: DistributionDepth) -> list[dict]:
+    """Валидация и нормализация ответа ИИ."""
+    allowed_types = {
+        DistributionDepth.STRATEGIC: {"mark"},
+        DistributionDepth.TACTICAL: {"mark", "week_task"},
+        DistributionDepth.DETAILED: {"mark", "week_task", "day_task"},
+    }[depth]
+
+    seen: dict[int, dict] = {}
+
+    for i, s in enumerate(raw):
+        # Фиксим sequential index
+        s["index"] = i
+
+        item_type = s.get("item_type", "mark")
+
+        # Даунгрейд запрещённых типов
+        if item_type not in allowed_types:
+            if item_type == "day_task" and "week_task" in allowed_types:
+                s["item_type"] = "week_task"
+                s["day_of_week"] = -1
+            else:
+                s["item_type"] = "mark"
+                s["parent_index"] = -1
+                s["day_of_week"] = -1
+            item_type = s["item_type"]
+
+        parent_idx = s.get("parent_index", -1)
+
+        # Проверяем parent_index
+        if parent_idx != -1:
+            parent = seen.get(parent_idx)
+            if parent is None:
+                # Orphan → promote to mark
+                s["parent_index"] = -1
+                s["item_type"] = "mark"
+            else:
+                # Проверяем type-совместимость
+                parent_type = parent.get("item_type", "mark")
+                if item_type == "week_task" and parent_type != "mark":
+                    s["parent_index"] = -1
+                    s["item_type"] = "mark"
+                elif item_type == "day_task" and parent_type != "week_task":
+                    s["parent_index"] = -1
+                    s["item_type"] = "mark"
+                else:
+                    # Дети могут быть на разных неделях — не наследуем target_week_position
+                    pass
+
+        # Marks всегда root
+        if s["item_type"] == "mark":
+            s["parent_index"] = -1
+
+        # day_of_week только для day_task
+        if s["item_type"] != "day_task":
+            s["day_of_week"] = -1
+
+        seen[i] = s
+
+    return raw
+
+
+def _find_root(suggestion: dict, index_map: dict) -> dict | None:
+    """Найти корневую пометку по цепочке parent_index."""
+    current = suggestion
+    visited = set()
+    while current.get("parent_index", -1) != -1:
+        pid = current["parent_index"]
+        if pid in visited:
+            return None
+        visited.add(pid)
+        current = index_map.get(pid)
+        if current is None:
+            return None
+    return current
 
 
 @router.post("/distribute/apply")
@@ -347,63 +498,142 @@ async def apply_distribution(
 
     from app.models import TaskStatus
 
-    applied = 0
-    for item in body.items:
+    # Маппинг suggestion index → DB ID для привязки иерархии
+    index_to_db_id: dict[int, str] = {}
+    # Маппинг (mark_index, week_id) → DB ID для клонирования пометок на другие недели
+    mark_clone_map: dict[tuple[int, str], str] = {}
+
+    # Pass 1: создать все marks
+    marks = [item for item in body.items if item.item_type == "mark"]
+    for item in marks:
         pi = all_items.get(item.pile_item_id)
-        if not pi:
-            logger.warning("apply: pile_item_id %s not found or already distributed", item.pile_item_id)
-            continue
+        if pi:
+            pi.distributed = True
 
-        pi.distributed = True
+        logger.info("apply: WeekMark title=%r week=%s index=%d", item.title, item.target_week_id, item.index)
+        count_result = await session.execute(
+            select(func.count()).where(WeekMark.week_id == item.target_week_id, WeekMark.is_deleted == False)
+        )
+        pos = count_result.scalar() or 0
+        mark = WeekMark(
+            week_id=item.target_week_id,
+            title=item.title,
+            theme_id=item.theme_id,
+            position=pos,
+        )
+        session.add(mark)
+        await session.flush()
+        index_to_db_id[item.index] = str(mark.id)
+        mark_clone_map[(item.index, str(item.target_week_id))] = str(mark.id)
 
+    # Helper: получить или создать клон пометки на нужной неделе
+    async def _get_or_clone_mark(mark_index: int, target_week_id: str) -> str | None:
+        """Если mark уже на этой неделе — вернуть его ID. Иначе — клонировать."""
+        key = (mark_index, target_week_id)
+        if key in mark_clone_map:
+            return mark_clone_map[key]
+
+        # Найти оригинальный mark
+        original_mark_id = index_to_db_id.get(mark_index)
+        if not original_mark_id:
+            return None
+
+        # Найти данные оригинала
+        original_item = next((m for m in marks if m.index == mark_index), None)
+        if not original_item:
+            return None
+
+        # Клонировать пометку на новую неделю
+        logger.info("apply: Clone WeekMark title=%r to week=%s (from mark index=%d)", original_item.title, target_week_id, mark_index)
+        count_result = await session.execute(
+            select(func.count()).where(WeekMark.week_id == target_week_id, WeekMark.is_deleted == False)
+        )
+        pos = count_result.scalar() or 0
+        clone = WeekMark(
+            week_id=target_week_id,
+            title=original_item.title,
+            theme_id=original_item.theme_id,
+            position=pos,
+        )
+        session.add(clone)
+        await session.flush()
+        clone_id = str(clone.id)
+        mark_clone_map[key] = clone_id
+        return clone_id
+
+    # Pass 2: создать week_tasks с привязкой к mark_id
+    week_tasks = [item for item in body.items if item.item_type == "week_task"]
+    for item in week_tasks:
+        pi = all_items.get(item.pile_item_id)
+        if pi:
+            pi.distributed = True
+
+        # Получить mark_id — если task на другой неделе, клонировать пометку
+        parent_mark_id = None
+        if item.parent_index >= 0:
+            parent_mark_id = await _get_or_clone_mark(item.parent_index, str(item.target_week_id))
+
+        logger.info("apply: WeekTask title=%r week=%s mark_id=%s", item.title, item.target_week_id, parent_mark_id)
+
+        count_result = await session.execute(
+            select(func.count()).where(WeekTask.week_id == item.target_week_id, WeekTask.is_deleted == False)
+        )
+        pos = count_result.scalar() or 0
+        task = WeekTask(
+            week_id=item.target_week_id,
+            title=item.title,
+            theme_id=item.theme_id,
+            mark_id=parent_mark_id,
+            position=pos,
+        )
+        session.add(task)
+        await session.flush()
+        index_to_db_id[item.index] = str(task.id)
+
+        # Обновить cached_load
+        load_result = await session.execute(
+            select(func.count()).where(
+                WeekTask.week_id == item.target_week_id,
+                WeekTask.is_deleted == False,
+                WeekTask.status == TaskStatus.todo.value,
+            )
+        )
+        load = load_result.scalar() or 0
+        week_obj = await session.get(Week, item.target_week_id)
+        if week_obj:
+            week_obj.cached_load = load
+
+    # Pass 3: создать day_tasks с привязкой к week_task_id
+    day_tasks = [item for item in body.items if item.item_type == "day_task"]
+    for item in day_tasks:
+        pi = all_items.get(item.pile_item_id)
+        if pi:
+            pi.distributed = True
+
+        parent_task_id = index_to_db_id.get(item.parent_index)
+        logger.info("apply: DayTask title=%r day=%d week=%s week_task_id=%s", item.title, item.day_of_week, item.target_week_id, parent_task_id)
+
+        day_task = DayTask(
+            week_id=item.target_week_id,
+            day_of_week=item.day_of_week,
+            title=item.title,
+            week_task_id=parent_task_id,
+        )
+        session.add(day_task)
+
+    # Fallback: элементы без item_type (обратная совместимость)
+    others = [item for item in body.items if item.item_type not in ("mark", "week_task", "day_task")]
+    for item in others:
+        pi = all_items.get(item.pile_item_id)
+        if pi:
+            pi.distributed = True
         if item.as_mark:
-            logger.info("apply: WeekMark title=%r week=%s", item.title, item.target_week_id)
-            count_result = await session.execute(
-                select(func.count()).where(WeekMark.week_id == item.target_week_id, WeekMark.is_deleted == False)
-            )
-            pos = count_result.scalar() or 0
-            mark = WeekMark(
-                week_id=item.target_week_id,
-                title=item.title,
-                theme_id=item.theme_id,
-                position=pos,
-            )
+            mark = WeekMark(week_id=item.target_week_id, title=item.title, theme_id=item.theme_id, position=0)
             session.add(mark)
-        elif item.day_of_week >= 0:
-            logger.info("apply: DayTask title=%r day=%d week=%s", item.title, item.day_of_week, item.target_week_id)
-            day_task = DayTask(
-                week_id=item.target_week_id,
-                day_of_week=item.day_of_week,
-                title=item.title,
-            )
-            session.add(day_task)
         else:
-            logger.info("apply: WeekTask title=%r week=%s", item.title, item.target_week_id)
-            count_result = await session.execute(
-                select(func.count()).where(WeekTask.week_id == item.target_week_id, WeekTask.is_deleted == False)
-            )
-            pos = count_result.scalar() or 0
-            task = WeekTask(
-                week_id=item.target_week_id,
-                title=item.title,
-                theme_id=item.theme_id,
-                position=pos,
-            )
+            task = WeekTask(week_id=item.target_week_id, title=item.title, theme_id=item.theme_id, position=0)
             session.add(task)
 
-            load_result = await session.execute(
-                select(func.count()).where(
-                    WeekTask.week_id == item.target_week_id,
-                    WeekTask.is_deleted == False,
-                    WeekTask.status == TaskStatus.todo.value,
-                )
-            )
-            load = load_result.scalar() or 0
-            week_obj = await session.get(Week, item.target_week_id)
-            if week_obj:
-                week_obj.cached_load = load + 1
-
-        applied += 1
-
+    applied = len(marks) + len(week_tasks) + len(day_tasks) + len(others)
     await session.commit()
     return {"ok": True, "applied": applied}

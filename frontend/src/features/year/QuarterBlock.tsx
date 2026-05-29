@@ -1,6 +1,6 @@
-import { useState } from "react";
-import type { QuarterBlock as QuarterBlockType } from "@/api";
-import { usePutQuarterNote, useCreateMark } from "@/hooks/useApi";
+import { useState, useRef, useEffect } from "react";
+import type { QuarterBlock as QuarterBlockType, ThemeRead } from "@/api";
+import { usePutQuarterNote, useCreateMark, useDeleteMarkFromYear, useUpdateMarkFromYear, useThemes } from "@/hooks/useApi";
 import { Textarea } from "@/components/ui/textarea";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
@@ -39,22 +39,88 @@ interface QuarterBlockProps {
   draggableMarks?: MarkDraggable[];
 }
 
-function DraggableMark({ mark }: { mark: MarkDraggable }) {
+function DraggableMark({ mark, onDelete, onChangeTheme, themes }: {
+  mark: MarkDraggable;
+  onDelete: (id: string) => void;
+  onChangeTheme: (id: string, themeId: string | null) => void;
+  themes: ThemeRead[];
+}) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `mark-${mark.id}` });
+  const [hovered, setHovered] = useState(false);
+  const [showThemes, setShowThemes] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showThemes) return;
+    function handleClick(e: MouseEvent) {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        setShowThemes(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showThemes]);
+
   return (
     <div
-      ref={setNodeRef}
-      {...attributes}
-      {...listeners}
-      className="flex items-center gap-1.5 min-w-0 cursor-grab active:cursor-grabbing rounded-lg px-2 py-1 border border-transparent hover:border-gray-200 hover:bg-gray-100 hover:shadow-sm transition-all shrink-0"
-      style={{ opacity: isDragging ? 0.4 : 1 }}
+      className="relative group"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setShowThemes(false); }}
     >
-      {mark.color && (
-        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: mark.color }} />
+      <div
+        ref={setNodeRef}
+        {...attributes}
+        {...listeners}
+        className="flex items-center gap-1.5 min-w-0 cursor-grab active:cursor-grabbing rounded-lg px-2 py-1 border border-transparent hover:border-gray-200 hover:bg-gray-100 hover:shadow-sm transition-all shrink-0"
+        style={{ opacity: isDragging ? 0.4 : 1 }}
+      >
+        <div
+          className="w-2.5 h-2.5 rounded-full flex-shrink-0 cursor-pointer"
+          style={{ backgroundColor: mark.color ?? "#94a3b8" }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowThemes(!showThemes); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          title="Сменить тему"
+        />
+        <span className="text-xs leading-tight font-medium break-words flex-1 min-w-0" style={{ color: mark.color ?? undefined }}>
+          {mark.title}
+        </span>
+        {hovered && (
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(mark.id); }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors text-xs font-bold"
+            title="Удалить пометку"
+          >
+            ×
+          </button>
+        )}
+      </div>
+      {showThemes && (
+        <div
+          ref={popoverRef}
+          className="absolute z-50 left-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-1.5 min-w-[140px]"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {themes.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => { onChangeTheme(mark.id, t.id); setShowThemes(false); }}
+              className="flex items-center gap-2 w-full px-2 py-1 rounded text-xs hover:bg-gray-100 transition-colors"
+            >
+              <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }} />
+              <span>{t.name}</span>
+            </button>
+          ))}
+          <button
+            onClick={() => { onChangeTheme(mark.id, null); setShowThemes(false); }}
+            className="flex items-center gap-2 w-full px-2 py-1 rounded text-xs hover:bg-gray-100 transition-colors text-gray-400"
+          >
+            <div className="w-2.5 h-2.5 rounded-full border border-gray-300" />
+            <span>Без темы</span>
+          </button>
+        </div>
       )}
-      <span className="text-xs leading-tight font-medium break-words" style={{ color: mark.color ?? undefined }}>
-        {mark.title}
-      </span>
     </div>
   );
 }
@@ -92,6 +158,9 @@ function DroppableWeekCard({
   marks,
   year,
   dateRange,
+  onDeleteMark,
+  onChangeTheme,
+  themes,
 }: {
   week: QuarterBlockType["weeks"][0];
   weekBudget: number;
@@ -99,6 +168,9 @@ function DroppableWeekCard({
   marks: MarkDraggable[];
   year: number;
   dateRange: string;
+  onDeleteMark: (id: string) => void;
+  onChangeTheme: (id: string, themeId: string | null) => void;
+  themes: ThemeRead[];
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: week.id });
   const [creating, setCreating] = useState(false);
@@ -160,7 +232,7 @@ function DroppableWeekCard({
                   style={marks.length > 4 ? { maxHeight: 120, overflowY: "auto" as const } : undefined}
                 >
                   {marks.map((m) => (
-                    <DraggableMark key={m.id} mark={m} />
+                    <DraggableMark key={m.id} mark={m} onDelete={onDeleteMark} onChangeTheme={onChangeTheme} themes={themes} />
                   ))}
                 </div>
                 {hovered && !creating && (
@@ -188,6 +260,9 @@ function DroppableWeekCard({
 export default function QuarterBlock({ data, year, weekBudget, currentDisplayPos, draggableMarks = [] }: QuarterBlockProps) {
   const [noteContent, setNoteContent] = useState(data.note?.content ?? "");
   const putNote = usePutQuarterNote(year, data.quarter);
+  const deleteMark = useDeleteMarkFromYear();
+  const updateMark = useUpdateMarkFromYear();
+  const { data: themes } = useThemes();
 
   const working = data.weeks.filter((w) => !w.is_rest_week);
   const restWeek = data.weeks.find((w) => w.is_rest_week);
@@ -198,6 +273,14 @@ export default function QuarterBlock({ data, year, weekBudget, currentDisplayPos
     if (noteContent !== (data.note?.content ?? "")) {
       putNote.mutate(noteContent);
     }
+  }
+
+  function handleDeleteMark(id: string) {
+    deleteMark.mutate({ id, cascade: "detach" });
+  }
+
+  function handleChangeTheme(id: string, themeId: string | null) {
+    updateMark.mutate({ id, theme_id: themeId });
   }
 
   const marksByWeek = new Map<string, MarkDraggable[]>();
@@ -233,6 +316,9 @@ export default function QuarterBlock({ data, year, weekBudget, currentDisplayPos
                 marks={marksByWeek.get(w.id) ?? []}
                 year={year}
                 dateRange={weekDateRange(year, w.iso_week)}
+                onDeleteMark={handleDeleteMark}
+                onChangeTheme={handleChangeTheme}
+                themes={themes ?? []}
               />
             ))}
             <div />
@@ -248,6 +334,9 @@ export default function QuarterBlock({ data, year, weekBudget, currentDisplayPos
                 marks={marksByWeek.get(w.id) ?? []}
                 year={year}
                 dateRange={weekDateRange(year, w.iso_week)}
+                onDeleteMark={handleDeleteMark}
+                onChangeTheme={handleChangeTheme}
+                themes={themes ?? []}
               />
             ))}
             {restWeek && (
@@ -258,6 +347,9 @@ export default function QuarterBlock({ data, year, weekBudget, currentDisplayPos
                 marks={marksByWeek.get(restWeek.id) ?? []}
                 year={year}
                 dateRange={weekDateRange(year, restWeek.iso_week)}
+                onDeleteMark={handleDeleteMark}
+                onChangeTheme={handleChangeTheme}
+                themes={themes ?? []}
               />
             )}
           </div>

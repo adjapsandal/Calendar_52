@@ -75,7 +75,107 @@ export function useMoveMark() {
   return useMutation({
     mutationFn: ({ markId, targetWeekId }: { markId: string; targetWeekId: string }) =>
       markApi.move(markId, targetWeekId),
-    onSuccess: () => {
+    onMutate: async ({ markId, targetWeekId }) => {
+      await qc.cancelQueries({ queryKey: ["year"] });
+      const previousData = qc.getQueriesData({ queryKey: ["year"] });
+
+      qc.setQueriesData<any>({ queryKey: ["year"] }, (old: any) => {
+        if (!old?.quarters) return old;
+        let movedMark: any = null;
+        const updated = {
+          ...old,
+          quarters: old.quarters.map((q: any) => ({
+            ...q,
+            weeks: q.weeks.map((w: any) => {
+              const found = w.marks_preview?.find((m: any) => m.id === markId);
+              if (found) {
+                movedMark = found;
+                return {
+                  ...w,
+                  marks_preview: w.marks_preview.filter((m: any) => m.id !== markId),
+                };
+              }
+              return w;
+            }),
+          })),
+        };
+        if (movedMark) {
+          return {
+            ...updated,
+            quarters: updated.quarters.map((q: any) => ({
+              ...q,
+              weeks: q.weeks.map((w: any) => {
+                if (w.id === targetWeekId) {
+                  return {
+                    ...w,
+                    marks_preview: [...(w.marks_preview ?? []), movedMark],
+                  };
+                }
+                return w;
+              }),
+            })),
+          };
+        }
+        return updated;
+      });
+
+      return { previousData };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previousData) {
+        for (const [key, data] of context.previousData) {
+          qc.setQueryData(key, data);
+        }
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["year"] });
+    },
+  });
+}
+
+export function useDeleteMarkFromYear() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, cascade }: { id: string; cascade?: string }) =>
+      markApi.delete(id, cascade),
+    onMutate: async ({ id }) => {
+      await qc.cancelQueries({ queryKey: ["year"] });
+      const previousData = qc.getQueriesData({ queryKey: ["year"] });
+      qc.setQueriesData<any>({ queryKey: ["year"] }, (old: any) => {
+        if (!old?.quarters) return old;
+        return {
+          ...old,
+          quarters: old.quarters.map((q: any) => ({
+            ...q,
+            weeks: q.weeks.map((w: any) => ({
+              ...w,
+              marks_preview: w.marks_preview?.filter((m: any) => m.id !== id) ?? [],
+            })),
+          })),
+        };
+      });
+      return { previousData };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previousData) {
+        for (const [key, data] of context.previousData) {
+          qc.setQueryData(key, data);
+        }
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["year"] });
+    },
+  });
+}
+
+export function useUpdateMarkFromYear() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: string } & Partial<WeekMarkRead>) =>
+      markApi.update(id, data),
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["year"] });
     },
   });
@@ -226,9 +326,9 @@ export function useUpdatePileItem() {
 
 export function useDistribute() {
   const qc = useQueryClient();
-  return useMutation<DistributeResponse, Error, string[] | undefined>({
-    mutationFn: async (ids) => {
-      const res = await pileApi.distribute(ids);
+  return useMutation<DistributeResponse, Error, { ids?: string[]; depth?: 1 | 2 | 3 } | undefined>({
+    mutationFn: async (params) => {
+      const res = await pileApi.distribute(params?.ids, params?.depth);
       return res.data;
     },
     onSuccess: () => {

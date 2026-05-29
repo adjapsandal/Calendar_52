@@ -55,8 +55,20 @@ interface DaysStripProps {
   weekTasks: WeekTaskRead[];
 }
 
-function DraggableTask({ task, markName, markColor }: { task: DayTaskRead; markName?: string; markColor?: string }) {
+function DraggableTask({
+  task,
+  markName,
+  markColor,
+  onToggleStatus,
+}: {
+  task: DayTaskRead;
+  markName?: string;
+  markColor?: string;
+  onToggleStatus: (id: string, done: boolean) => void;
+}) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id });
+  const isDone = task.status === "done";
+
   return (
     <div
       ref={setNodeRef}
@@ -65,6 +77,7 @@ function DraggableTask({ task, markName, markColor }: { task: DayTaskRead; markN
       className={cn(
         "mt-1.5 w-full rounded-lg border cursor-grab active:cursor-grabbing overflow-hidden hover:shadow-sm hover:border-gray-300 transition-all shrink-0",
         isDragging && "opacity-40",
+        isDone && "opacity-60",
       )}
     >
       {markName && (
@@ -75,7 +88,22 @@ function DraggableTask({ task, markName, markColor }: { task: DayTaskRead; markN
           {markName}
         </div>
       )}
-      <div className="text-xs truncate px-2 py-1 bg-gray-50 text-gray-800">{task.title}</div>
+      <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-50">
+        <input
+          type="checkbox"
+          checked={isDone}
+          onChange={(e) => {
+            e.stopPropagation();
+            onToggleStatus(task.id, !isDone);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          className="h-3.5 w-3.5 rounded border-gray-300 text-primary flex-shrink-0 cursor-pointer"
+        />
+        <span className={cn("text-xs truncate text-gray-800", isDone && "line-through text-gray-400")}>
+          {task.title}
+        </span>
+      </div>
     </div>
   );
 }
@@ -89,6 +117,7 @@ function DroppableDay({
   isOver,
   isToday,
   getMarkInfo,
+  onToggleStatus,
 }: {
   dayIndex: number;
   label: string;
@@ -98,6 +127,7 @@ function DroppableDay({
   isOver: boolean;
   isToday: boolean;
   getMarkInfo: (dt: DayTaskRead) => { name: string; color: string } | undefined;
+  onToggleStatus: (id: string, done: boolean) => void;
 }) {
   const { setNodeRef } = useDroppable({ id: dayIndex });
 
@@ -106,11 +136,11 @@ function DroppableDay({
   const scrollMaxHeight = MAX_VISIBLE * TASK_HEIGHT;
 
   return (
-    <Link to={`/week/${weekId}/day/${dayIndex}`} className="block">
+    <Link to={`/week/${weekId}/day/${dayIndex}`} className="block h-full">
       <div
         ref={setNodeRef}
         className={cn(
-          "flex flex-col rounded-xl border p-4 transition-all hover:shadow-sm min-h-[130px]",
+          "flex flex-col rounded-xl border p-4 transition-all hover:shadow-sm min-h-[130px] h-full",
           isToday
             ? "bg-blue-600 border-blue-600 text-white"
             : "bg-white border-gray-200 hover:border-blue-300",
@@ -143,7 +173,7 @@ function DroppableDay({
         >
           {tasks.map((t) => {
             const mi = getMarkInfo(t);
-            return <DraggableTask key={t.id} task={t} markName={mi?.name} markColor={mi?.color} />;
+            return <DraggableTask key={t.id} task={t} markName={mi?.name} markColor={mi?.color} onToggleStatus={onToggleStatus} />;
           })}
         </div>
       </div>
@@ -166,13 +196,14 @@ export default function DaysStrip({ weekId, dayTasks, year, isoWeek, yearNumber,
   const markById = new Map(marks.map((m) => [m.id, m]));
   const weekTaskById = new Map(weekTasks.map((wt) => [wt.id, wt]));
 
-  function getMarkForDayTask(dt: DayTaskRead): { name: string; color: string } | undefined {
+  function getParentInfo(dt: DayTaskRead): { name: string; color: string } | undefined {
     if (!dt.week_task_id) return undefined;
     const wt = weekTaskById.get(dt.week_task_id);
-    if (!wt?.mark_id) return undefined;
-    const mark = markById.get(wt.mark_id);
-    if (!mark) return undefined;
-    return { name: mark.title, color: mark.theme_color ?? "#94a3b8" };
+    if (!wt) return undefined;
+    // Название — от задачи недели, цвет — от пометки (или дефолт)
+    const mark = wt.mark_id ? markById.get(wt.mark_id) : undefined;
+    const color = mark?.theme_color ?? "#94a3b8";
+    return { name: wt.title, color };
   }
 
   const tasksByDay = new Map<number, DayTaskRead[]>();
@@ -180,6 +211,10 @@ export default function DaysStrip({ weekId, dayTasks, year, isoWeek, yearNumber,
     const list = tasksByDay.get(t.day_of_week) ?? [];
     list.push(t);
     tasksByDay.set(t.day_of_week, list);
+  }
+
+  function handleToggleStatus(id: string, done: boolean) {
+    updateTask.mutate({ id, status: done ? "done" : "todo" });
   }
 
   function handleDragStart(event: DragStartEvent) {
@@ -228,7 +263,8 @@ export default function DaysStrip({ weekId, dayTasks, year, isoWeek, yearNumber,
               weekId={weekId}
               isOver={overDay === dayIndex}
               isToday={isSameDay(date, today)}
-              getMarkInfo={getMarkForDayTask}
+              getMarkInfo={getParentInfo}
+              onToggleStatus={handleToggleStatus}
             />
           );
         })}
@@ -245,7 +281,8 @@ export default function DaysStrip({ weekId, dayTasks, year, isoWeek, yearNumber,
               weekId={weekId}
               isOver={overDay === 6}
               isToday={isSameDay(sunDate, today)}
-              getMarkInfo={getMarkForDayTask}
+              getMarkInfo={getParentInfo}
+              onToggleStatus={handleToggleStatus}
             />
           </div>
         );
