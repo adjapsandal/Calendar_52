@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ai import get_anthropic_client
 from app.core.auth import current_active_user
 from app.core.db import get_async_session
-from app.models import Pile, PileItem, Theme, User, Week, WeekMark, WeekTask, DayTask, Year
+from app.models import DayTask, Pile, PileItem, Theme, User, Week, WeekMark, WeekTask, Year
 from app.schemas.pile import (
     ApplyRequest,
     DistributeRequest,
@@ -350,7 +350,7 @@ async def distribute(
         )
     except Exception as e:
         logger.error("AI request failed: %s (%.1fs)", str(e)[:200], time.time() - start)
-        raise HTTPException(503, "ИИ временно недоступен, попробуйте позже")
+        raise HTTPException(503, "ИИ временно недоступен, попробуйте позже") from e
 
     logger.info("AI distribute ok: user=%s prompt=%dchars %.1fs", str(user.id)[:8], len(user_prompt), time.time() - start)
 
@@ -491,6 +491,19 @@ async def apply_distribution(
 ):
     pile = await _get_pile(session, user.id)
 
+    # Недели приходят из тела запроса, поэтому проверяем разом, что все они
+    # принадлежат текущему пользователю — иначе можно записать задачи в чужой план.
+    target_week_ids = {item.target_week_id for item in body.items if item.target_week_id}
+    if target_week_ids:
+        owned_stmt = (
+            select(Week.id)
+            .join(Year, Week.year_id == Year.id)
+            .where(Week.id.in_(target_week_ids), Year.user_id == user.id)
+        )
+        owned_week_ids = set((await session.execute(owned_stmt)).scalars().all())
+        if owned_week_ids != target_week_ids:
+            raise HTTPException(404, "Неделя не найдена")
+
     pile_items_stmt = select(PileItem).where(
         PileItem.pile_id == pile.id, PileItem.distributed == False
     )
@@ -544,7 +557,10 @@ async def apply_distribution(
             return None
 
         # Клонировать пометку на новую неделю
-        logger.info("apply: Clone WeekMark title=%r to week=%s (from mark index=%d)", original_item.title, target_week_id, mark_index)
+        logger.info(
+            "apply: Clone WeekMark title=%r to week=%s (from mark index=%d)",
+            original_item.title, target_week_id, mark_index,
+        )
         count_result = await session.execute(
             select(func.count()).where(WeekMark.week_id == target_week_id, WeekMark.is_deleted == False)
         )
@@ -573,7 +589,10 @@ async def apply_distribution(
         if item.parent_index >= 0:
             parent_mark_id = await _get_or_clone_mark(item.parent_index, str(item.target_week_id))
 
-        logger.info("apply: WeekTask title=%r week=%s mark_id=%s", item.title, item.target_week_id, parent_mark_id)
+        logger.info(
+            "apply: WeekTask title=%r week=%s mark_id=%s",
+            item.title, item.target_week_id, parent_mark_id,
+        )
 
         count_result = await session.execute(
             select(func.count()).where(WeekTask.week_id == item.target_week_id, WeekTask.is_deleted == False)
@@ -611,7 +630,10 @@ async def apply_distribution(
             pi.distributed = True
 
         parent_task_id = index_to_db_id.get(item.parent_index)
-        logger.info("apply: DayTask title=%r day=%d week=%s week_task_id=%s", item.title, item.day_of_week, item.target_week_id, parent_task_id)
+        logger.info(
+            "apply: DayTask title=%r day=%d week=%s week_task_id=%s",
+            item.title, item.day_of_week, item.target_week_id, parent_task_id,
+        )
 
         day_task = DayTask(
             week_id=item.target_week_id,

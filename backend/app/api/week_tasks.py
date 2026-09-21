@@ -1,13 +1,13 @@
-from datetime import datetime, timezone
-from uuid import UUID
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_active_user
 from app.core.db import get_async_session
-from app.models import DayTask, TaskStatus, User, Week, WeekTask
+from app.core.ownership import get_owned_week, get_owned_week_task
+from app.models import TaskStatus, User, Week, WeekTask
 from app.schemas.week import WeekTaskCreate, WeekTaskRead, WeekTaskUpdate
 
 router = APIRouter(prefix="/api/v1", tags=["week-tasks"])
@@ -20,20 +20,22 @@ async def create_week_task(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
+    week = await get_owned_week(session, week_id, user)
+
     result = await session.execute(
-        select(func.count()).where(WeekTask.week_id == week_id, WeekTask.is_deleted == False)
+        select(func.count()).where(WeekTask.week_id == week.id, WeekTask.is_deleted == False)
     )
     pos = result.scalar() or 0
 
     task = WeekTask(
-        week_id=week_id, title=body.title, mark_id=body.mark_id,
+        week_id=week.id, title=body.title, mark_id=body.mark_id,
         theme_id=body.theme_id, position=pos,
     )
     session.add(task)
     await session.commit()
     await session.refresh(task)
 
-    await _recalc_load(session, week_id)
+    await _recalc_load(session, week.id)
     await session.commit()
 
     return task
@@ -46,7 +48,7 @@ async def update_week_task(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    task = await session.get(WeekTask, task_id)
+    task = await get_owned_week_task(session, task_id, user)
     old_status = task.status
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(task, k, v)
@@ -66,9 +68,9 @@ async def delete_week_task(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    task = await session.get(WeekTask, task_id)
+    task = await get_owned_week_task(session, task_id, user)
     task.is_deleted = True
-    task.deleted_at = datetime.now(timezone.utc)
+    task.deleted_at = datetime.now(UTC)
     await _recalc_load(session, task.week_id)
     await session.commit()
     return {"ok": True}
@@ -81,14 +83,15 @@ async def move_week_task(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    task = await session.get(WeekTask, task_id)
+    task = await get_owned_week_task(session, task_id, user)
     target_week_id = body.get("target_week_id")
     if not target_week_id:
-        from fastapi import HTTPException
         raise HTTPException(400, "target_week_id required")
 
+    target_week = await get_owned_week(session, target_week_id, user)
+
     old_week_id = task.week_id
-    task.week_id = UUID(target_week_id)
+    task.week_id = target_week.id
     await _recalc_load(session, old_week_id)
     await _recalc_load(session, task.week_id)
     await session.commit()

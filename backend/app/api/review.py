@@ -1,15 +1,16 @@
-from datetime import datetime
 import json
-from uuid import UUID
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.ai import get_anthropic_client
 from app.core.auth import current_active_user
 from app.core.db import get_async_session
-from app.models import User, Week, WeekMark, WeekTask, WeeklyReview
+from app.core.ownership import get_owned_week
+from app.models import User, Week, WeeklyReview, WeekTask
 from app.schemas.review import (
     ReflectRequest,
     ReviewCompleteResponse,
@@ -18,6 +19,7 @@ from app.schemas.review import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["review"])
+logger = logging.getLogger("ai")
 
 REVIEW_TOOL = {
     "name": "weekly_reflection",
@@ -64,25 +66,23 @@ async def start_review(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    from sqlalchemy.orm import selectinload
+    owned = await get_owned_week(session, week_id, user)
 
     stmt = (
         select(Week)
-        .where(Week.id == week_id)
+        .where(Week.id == owned.id)
         .options(
             selectinload(Week.marks),
             selectinload(Week.week_tasks),
         )
     )
-    week = (await session.execute(stmt)).scalar_one_or_none()
-    if not week:
-        raise HTTPException(404, "Неделя не найдена")
+    week = (await session.execute(stmt)).scalar_one()
 
     marks = [m for m in week.marks if not m.is_deleted]
     tasks = [t for t in week.week_tasks if not t.is_deleted]
 
     existing = await session.execute(
-        select(WeeklyReview).where(WeeklyReview.week_id == week_id)
+        select(WeeklyReview).where(WeeklyReview.week_id == week.id)
     )
     review = existing.scalar_one_or_none()
 
@@ -108,17 +108,14 @@ async def reflect(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    stmt = select(Week).where(Week.id == week_id)
-    week = (await session.execute(stmt)).scalar_one_or_none()
-    if not week:
-        raise HTTPException(404, "Неделя не найдена")
+    week = await get_owned_week(session, week_id, user)
 
-    tasks_stmt = select(WeekTask).where(WeekTask.week_id == week_id, WeekTask.is_deleted == False)
-    tasks = (await session.execute(tasks_stmt)).scalars().all()
+    tasks_stmt = select(WeekTask).where(WeekTask.week_id == week.id, WeekTask.is_deleted == False)
 
+    # Обновляем статусы только тех задач, которые принадлежат этой неделе.
     for t in body.task_statuses:
         task = await session.get(WeekTask, t.id)
-        if task and task.week_id == UUID(week_id):
+        if task and task.week_id == week.id:
             task.status = t.status
     await session.commit()
 
@@ -135,7 +132,7 @@ async def reflect(
 {task_summary}
 
 ## Незакрытые задачи (статус todo):
-{json_dumps([{"id": str(t.id), "title": t.title} for t in undone], ensure_ascii=False)}
+{json.dumps([{"id": str(t.id), "title": t.title} for t in undone], ensure_ascii=False)}
 
 ## Рефлексия пользователя:
 {body.raw_input or "(пользователь пропустил рефлексию)"}
@@ -147,8 +144,6 @@ async def reflect(
 4. Для каждой незакрытой задачи предложи действие: carry_over (перенести) или drop (удалить).
 5. Отвечай на русском."""
 
-    import json as json_mod
-
     client = get_anthropic_client()
     try:
         response = client.messages.create(
@@ -159,9 +154,8 @@ async def reflect(
             tool_choice={"type": "tool", "name": "weekly_reflection"},
         )
     except Exception as e:
-        import logging
-        logging.getLogger("ai").error("Review AI failed: %s", str(e)[:200])
-        raise HTTPException(503, "ИИ временно недоступен")
+        logger.error("Review AI failed: %s", str(e)[:200])
+        raise HTTPException(503, "ИИ временно недоступен") from e
 
     tool_block = None
     for block in response.content:
@@ -175,7 +169,7 @@ async def reflect(
     result = tool_block.input
 
     review = WeeklyReview(
-        week_id=UUID(week_id),
+        week_id=week.id,
         raw_input=body.raw_input or "",
         achievements=result.get("achievements", ""),
         lessons=result.get("lessons", ""),
@@ -183,7 +177,7 @@ async def reflect(
     )
 
     existing = await session.execute(
-        select(WeeklyReview).where(WeeklyReview.week_id == week_id)
+        select(WeeklyReview).where(WeeklyReview.week_id == week.id)
     )
     existing_review = existing.scalar_one_or_none()
     if existing_review:
@@ -210,9 +204,11 @@ async def complete_review(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
+    week = await get_owned_week(session, week_id, user)
+
     undone = (await session.execute(
         select(WeekTask).where(
-            WeekTask.week_id == week_id,
+            WeekTask.week_id == week.id,
             WeekTask.is_deleted == False,
             WeekTask.status == "todo",
         )
@@ -224,8 +220,3 @@ async def complete_review(
     await session.commit()
 
     return ReviewCompleteResponse(ok=True, cancelled_count=len(undone))
-
-
-def json_dumps(obj, **kwargs):
-    import json
-    return json.dumps(obj, **kwargs)

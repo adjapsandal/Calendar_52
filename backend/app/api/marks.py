@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, Query
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid import UUID
 
 from app.core.auth import current_active_user
 from app.core.db import get_async_session
+from app.core.ownership import get_owned_mark, get_owned_week
 from app.models import DayTask, TaskStatus, User, Week, WeekMark, WeekTask
 from app.schemas.week import WeekMarkCreate, WeekMarkRead, WeekMarkUpdate
 
@@ -18,12 +20,20 @@ async def create_mark(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
+    week = await get_owned_week(session, week_id, user)
+
     result = await session.execute(
-        select(func.count()).where(WeekMark.week_id == week_id, WeekMark.is_deleted == False)
+        select(func.count()).where(WeekMark.week_id == week.id, WeekMark.is_deleted == False)
     )
     pos = result.scalar() or 0
 
-    mark = WeekMark(week_id=week_id, title=body.title, theme_id=body.theme_id, description=body.description, position=pos)
+    mark = WeekMark(
+        week_id=week.id,
+        title=body.title,
+        theme_id=body.theme_id,
+        description=body.description,
+        position=pos,
+    )
     session.add(mark)
     await session.commit()
     await session.refresh(mark)
@@ -37,7 +47,7 @@ async def update_mark(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    mark = await session.get(WeekMark, mark_id)
+    mark = await get_owned_mark(session, mark_id, user)
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(mark, k, v)
     await session.commit()
@@ -52,30 +62,27 @@ async def delete_mark(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    from datetime import datetime, timezone
-
-    mark = await session.get(WeekMark, mark_id)
+    mark = await get_owned_mark(session, mark_id, user)
+    now = datetime.now(UTC)
     mark.is_deleted = True
-    mark.deleted_at = datetime.now(timezone.utc)
+    mark.deleted_at = now
 
     if cascade == "delete":
         tasks = (await session.execute(
-            select(WeekTask).where(WeekTask.mark_id == mark_id, WeekTask.is_deleted == False)
+            select(WeekTask).where(WeekTask.mark_id == mark.id, WeekTask.is_deleted == False)
         )).scalars().all()
         for t in tasks:
             t.is_deleted = True
-            t.deleted_at = datetime.now(timezone.utc)
-        from app.models import DayTask
-        for t in tasks:
+            t.deleted_at = now
             dts = (await session.execute(
                 select(DayTask).where(DayTask.week_task_id == t.id, DayTask.is_deleted == False)
             )).scalars().all()
             for dt in dts:
                 dt.is_deleted = True
-                dt.deleted_at = datetime.now(timezone.utc)
+                dt.deleted_at = now
     else:
         await session.execute(
-            WeekTask.__table__.update().where(WeekTask.mark_id == mark_id).values(mark_id=None)
+            WeekTask.__table__.update().where(WeekTask.mark_id == mark.id).values(mark_id=None)
         )
 
     await _recalc_load(session, mark.week_id)
@@ -90,26 +97,29 @@ async def move_mark(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    mark = await session.get(WeekMark, mark_id)
+    mark = await get_owned_mark(session, mark_id, user)
     target_week_id = body.get("target_week_id")
     if not target_week_id:
-        from fastapi import HTTPException
         raise HTTPException(400, "target_week_id required")
 
+    # Целевая неделя тоже должна принадлежать пользователю, иначе можно
+    # перенести свою пометку в чужой план.
+    target_week = await get_owned_week(session, target_week_id, user)
+
     old_week_id = mark.week_id
-    mark.week_id = UUID(target_week_id)
+    mark.week_id = target_week.id
 
     tasks = (await session.execute(
-        select(WeekTask).where(WeekTask.mark_id == mark_id, WeekTask.is_deleted == False)
+        select(WeekTask).where(WeekTask.mark_id == mark.id, WeekTask.is_deleted == False)
     )).scalars().all()
     for t in tasks:
         old_task_week = t.week_id
-        t.week_id = UUID(target_week_id)
+        t.week_id = target_week.id
         dts = (await session.execute(
             select(DayTask).where(DayTask.week_task_id == t.id, DayTask.is_deleted == False)
         )).scalars().all()
         for dt in dts:
-            dt.week_id = UUID(target_week_id)
+            dt.week_id = target_week.id
         await _recalc_load(session, old_task_week)
 
     await _recalc_load(session, old_week_id)

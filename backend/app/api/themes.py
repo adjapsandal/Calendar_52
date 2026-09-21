@@ -1,5 +1,4 @@
-from datetime import datetime, timezone
-from uuid import UUID
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -7,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_active_user
 from app.core.db import get_async_session
+from app.core.ownership import get_owned_theme
 from app.models import Theme, User
 from app.schemas.theme import ThemeCreate, ThemeRead, ThemeUpdate
 
@@ -44,7 +44,7 @@ async def update_theme(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    theme = await session.get(Theme, theme_id)
+    theme = await get_owned_theme(session, theme_id, user)
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(theme, k, v)
     await session.commit()
@@ -58,8 +58,8 @@ async def delete_theme(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    theme = await session.get(Theme, theme_id)
+    theme = await get_owned_theme(session, theme_id, user)
     theme.is_deleted = True
-    theme.deleted_at = datetime.now(timezone.utc)
+    theme.deleted_at = datetime.now(UTC)
     await session.commit()
     return {"ok": True}

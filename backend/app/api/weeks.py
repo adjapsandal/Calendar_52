@@ -5,6 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.auth import current_active_user
 from app.core.db import get_async_session
+from app.core.ownership import get_owned_week, to_uuid
 from app.models import User, Week, WeekMark
 from app.schemas.week import WeekDetail, WeekMarkRead
 
@@ -17,9 +18,11 @@ async def get_week(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
+    await get_owned_week(session, week_id, user)
+
     stmt = (
         select(Week)
-        .where(Week.id == week_id)
+        .where(Week.id == to_uuid(week_id))
         .options(
             selectinload(Week.marks).selectinload(WeekMark.theme),
             selectinload(Week.week_tasks),
