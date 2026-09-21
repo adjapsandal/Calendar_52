@@ -1,0 +1,24 @@
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+backend/.env
+*.pem
+*.key
+*token*.txt
+
+# Database dumps
+*.sql
+*.dump
+*.backup
+
+# Private notes, not part of the project
+/бюрократия
+/descriptions
+/.claude
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
