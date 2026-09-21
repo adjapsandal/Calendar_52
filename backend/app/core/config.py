@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     JWT_LIFETIME_SECONDS: int = 2592000
     ANTHROPIC_API_KEY: str = ""
-    ANTHROPIC_BASE_URL: str = "https://api.claudehub.fun"
+    ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
     APP_ENV: str = "development"
     CORS_ORIGINS: str = "http://localhost:5173"
 
