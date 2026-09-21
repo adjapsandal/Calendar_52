@@ -1,0 +1,37 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    # SQLAlchemy требует `== False` вместо `is False` в выражениях фильтрации.
+    "E712",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# В FastAPI вызов в значении по умолчанию — штатный способ объявить зависимость.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.File",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Настройка логирования должна выполниться до импорта модулей, которые логируют.
+"app/main.py" = ["E402"]
+# Переменные окружения выставляются до импорта приложения, см. комментарий в файле.
+"tests/conftest.py" = ["E402"]
+# Содержат тексты промптов и JSON-схем инструментов в тройных кавычках:
+# перенос строк изменил бы то, что уходит в модель.
+"app/api/chat.py" = ["E501"]
+"app/api/pile.py" = ["E501"]
