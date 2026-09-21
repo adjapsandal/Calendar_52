@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import type { ReviewStartResponse, ReviewReflectResponse } from "@/api";
 
 const STATUS_CYCLE = ["todo", "done", "cancelled"] as const;
+type TaskStatus = (typeof STATUS_CYCLE)[number];
 const STATUS_LABELS: Record<string, string> = { todo: "Не сделано", done: "Сделано", cancelled: "Отменено" };
 
 export default function ReviewPage() {
@@ -20,7 +21,7 @@ export default function ReviewPage() {
 
   const [step, setStep] = useState(0);
   const [reviewData, setReviewData] = useState<ReviewStartResponse | null>(null);
-  const [taskStatuses, setTaskStatuses] = useState<Map<string, string>>(new Map());
+  const [taskStatuses, setTaskStatuses] = useState<Map<string, TaskStatus>>(new Map());
   const [rawInput, setRawInput] = useState("");
   const [aiResult, setAiResult] = useState<ReviewReflectResponse | null>(null);
 
@@ -29,8 +30,8 @@ export default function ReviewPage() {
     try {
       const data = await startReview.mutateAsync(weekId);
       setReviewData(data);
-      const map = new Map<string, string>();
-      data.tasks.forEach((t) => map.set(t.id, t.status));
+      const map = new Map<string, TaskStatus>();
+      data.tasks.forEach((t) => map.set(t.id, t.status as TaskStatus));
       setTaskStatuses(map);
       setStep(1);
     } catch {
@@ -42,8 +43,8 @@ export default function ReviewPage() {
     setTaskStatuses((prev) => {
       const next = new Map(prev);
       const cur = next.get(taskId) ?? "todo";
-      const idx = STATUS_CYCLE.indexOf(cur as any);
-      next.set(taskId, STATUS_CYCLE[(idx + 1) % 3]);
+      const idx = STATUS_CYCLE.indexOf(cur);
+      next.set(taskId, STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length]);
       return next;
     });
   }

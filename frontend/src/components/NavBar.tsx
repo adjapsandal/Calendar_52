@@ -9,7 +9,12 @@ export default function NavBar({ children }: { children?: React.ReactNode }) {
   const navigate = useNavigate();
 
   async function handleLogout() {
-    try { await authApi.logout(); } catch {}
+    // Даже если сервер не ответил, уводим пользователя на страницу входа.
+    try {
+      await authApi.logout();
+    } catch {
+      // игнорируем: локальный выход важнее ответа сервера
+    }
     navigate("/login", { replace: true });
   }
 

@@ -19,4 +19,12 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // Компоненты shadcn/ui генерируются и экспортируют рядом с компонентом
+    // его cva-варианты — правило про fast refresh здесь неприменимо.
+    files: ['src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

@@ -13,7 +13,7 @@ export default function AppLayout() {
     }).catch(() => {
       navigate("/login", { replace: true });
     });
-  }, []);
+  }, [navigate]);
 
   if (!checked) return null;
 

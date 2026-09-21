@@ -98,7 +98,7 @@ function MarkSection({
   }
 
   function handleThemeChange(themeId: string) {
-    updateMark.mutate({ id: mark.id, theme_id: themeId || null } as any);
+    updateMark.mutate({ id: mark.id, theme_id: themeId || null });
     setEditingTheme(false);
   }
 

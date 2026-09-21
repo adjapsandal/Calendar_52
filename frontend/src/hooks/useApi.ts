@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { yearApi, weekApi, noteApi, markApi, weekTaskApi, dayTaskApi, themeApi, settingsApi, pileApi, reviewApi, type YearData, type WeekDetail, type QuarterNote, type WeekMarkRead, type WeekTaskRead, type DayTaskRead, type ThemeRead, type SettingsRead, type PileItemRead, type DistributeResponse, type ReviewStartResponse, type ReviewReflectResponse } from "../api";
+import { yearApi, weekApi, noteApi, markApi, weekTaskApi, dayTaskApi, themeApi, settingsApi, pileApi, reviewApi, type YearData, type MarkPreview, type WeekDetail, type QuarterNote, type WeekMarkRead, type WeekTaskRead, type DayTaskRead, type ThemeRead, type SettingsRead, type PileItemRead, type DistributeResponse, type ReviewStartResponse, type ReviewReflectResponse } from "../api";
 
 export function useYear(year: number) {
   return useQuery<YearData>({
@@ -79,20 +79,20 @@ export function useMoveMark() {
       await qc.cancelQueries({ queryKey: ["year"] });
       const previousData = qc.getQueriesData({ queryKey: ["year"] });
 
-      qc.setQueriesData<any>({ queryKey: ["year"] }, (old: any) => {
+      qc.setQueriesData<YearData>({ queryKey: ["year"] }, (old) => {
         if (!old?.quarters) return old;
-        let movedMark: any = null;
-        const updated = {
+        let movedMark: MarkPreview | null = null;
+        const updated: YearData = {
           ...old,
-          quarters: old.quarters.map((q: any) => ({
+          quarters: old.quarters.map((q) => ({
             ...q,
-            weeks: q.weeks.map((w: any) => {
-              const found = w.marks_preview?.find((m: any) => m.id === markId);
+            weeks: q.weeks.map((w) => {
+              const found = w.marks_preview?.find((m) => m.id === markId);
               if (found) {
                 movedMark = found;
                 return {
                   ...w,
-                  marks_preview: w.marks_preview.filter((m: any) => m.id !== markId),
+                  marks_preview: w.marks_preview.filter((m) => m.id !== markId),
                 };
               }
               return w;
@@ -100,19 +100,16 @@ export function useMoveMark() {
           })),
         };
         if (movedMark) {
+          const mark: MarkPreview = movedMark;
           return {
             ...updated,
-            quarters: updated.quarters.map((q: any) => ({
+            quarters: updated.quarters.map((q) => ({
               ...q,
-              weeks: q.weeks.map((w: any) => {
-                if (w.id === targetWeekId) {
-                  return {
-                    ...w,
-                    marks_preview: [...(w.marks_preview ?? []), movedMark],
-                  };
-                }
-                return w;
-              }),
+              weeks: q.weeks.map((w) =>
+                w.id === targetWeekId
+                  ? { ...w, marks_preview: [...(w.marks_preview ?? []), mark] }
+                  : w,
+              ),
             })),
           };
         }
@@ -142,15 +139,15 @@ export function useDeleteMarkFromYear() {
     onMutate: async ({ id }) => {
       await qc.cancelQueries({ queryKey: ["year"] });
       const previousData = qc.getQueriesData({ queryKey: ["year"] });
-      qc.setQueriesData<any>({ queryKey: ["year"] }, (old: any) => {
+      qc.setQueriesData<YearData>({ queryKey: ["year"] }, (old) => {
         if (!old?.quarters) return old;
         return {
           ...old,
-          quarters: old.quarters.map((q: any) => ({
+          quarters: old.quarters.map((q) => ({
             ...q,
-            weeks: q.weeks.map((w: any) => ({
+            weeks: q.weeks.map((w) => ({
               ...w,
-              marks_preview: w.marks_preview?.filter((m: any) => m.id !== id) ?? [],
+              marks_preview: w.marks_preview?.filter((m) => m.id !== id) ?? [],
             })),
           })),
         };

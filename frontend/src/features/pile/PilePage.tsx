@@ -12,6 +12,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import NavBar from "@/components/NavBar";
 import type { DistributionSuggestion, DistributionDepth } from "@/api";
+import { apiErrorMessage } from "@/lib/errors";
 import DistributionProposal from "./DistributionProposal";
 
 const DEPTH_OPTIONS: { value: DistributionDepth; label: string; desc: string }[] = [
@@ -92,8 +93,8 @@ export default function PilePage() {
         setSuggestions(result.suggestions);
         setModalOpen(true);
       }
-    } catch (e: any) {
-      alert(e?.response?.data?.detail || "ИИ временно недоступен");
+    } catch (e: unknown) {
+      alert(apiErrorMessage(e, "ИИ временно недоступен"));
     }
   }
 

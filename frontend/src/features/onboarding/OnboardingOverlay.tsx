@@ -9,7 +9,9 @@ export default function OnboardingOverlay() {
   async function handleFinish() {
     try {
       await authApi.patchMe({ onboarded: true });
-    } catch {}
+    } catch {
+      // игнорируем: онбординг всё равно закрываем, повторно он не откроется
+    }
     finish();
   }
 

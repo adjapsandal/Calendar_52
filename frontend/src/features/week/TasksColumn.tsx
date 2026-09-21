@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { WeekMarkRead, WeekTaskRead } from "@/api";
 import { useCreateWeekTask, useDeleteWeekTask, useUpdateWeekTask } from "@/hooks/useApi";
 import { Button } from "@/components/ui/button";
@@ -102,10 +102,15 @@ export default function TasksColumn({ weekId, tasks, marks, year }: TasksColumnP
   const update = useUpdateWeekTask(weekId, year);
   const remove = useDeleteWeekTask(weekId, year);
 
+  // Порядок задач хранится локально ради перетаскивания, но должен следовать
+  // за сервером. Подстройка во время рендера вместо useEffect — рекомендованный
+  // React способ: лишнего коммита и мигания списка не происходит.
   const serverIds = tasks.map((t) => t.id).join(",");
-  useEffect(() => {
+  const [syncedIds, setSyncedIds] = useState(serverIds);
+  if (syncedIds !== serverIds) {
+    setSyncedIds(serverIds);
     setLocalTasks(tasks.map((t) => t.id));
-  }, [serverIds]);
+  }
 
   const taskMap = new Map(tasks.map((t) => [t.id, t]));
   const markMap = new Map(marks.map((m) => [m.id, m]));
