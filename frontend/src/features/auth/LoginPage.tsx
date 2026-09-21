@@ -5,6 +5,9 @@ import { useOnboardingStore } from "@/store/onboarding";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiErrorDetail } from "@/lib/errors";
+
+const CURRENT_YEAR = new Date().getFullYear();
 
 export default function LoginPage() {
   const [isRegister, setIsRegister] = useState(false);
@@ -21,21 +24,20 @@ export default function LoginPage() {
       if (isRegister) {
         try {
           await authApi.register(email, password);
-        } catch (regErr: any) {
-          const detail = regErr?.response?.data?.detail;
-          if (detail === "REGISTER_USER_ALREADY_EXISTS") {
-            setError("Пользователь с таким email уже существует");
-          } else {
-            setError("Ошибка регистрации");
-          }
+        } catch (regErr: unknown) {
+          setError(
+            apiErrorDetail(regErr) === "REGISTER_USER_ALREADY_EXISTS"
+              ? "Пользователь с таким email уже существует"
+              : "Ошибка регистрации",
+          );
           return;
         }
         await authApi.login(email, password);
         startOnboarding();
-        navigate("/year/2026");
+        navigate(`/year/${CURRENT_YEAR}`);
       } else {
         await authApi.login(email, password);
-        navigate("/year/2026");
+        navigate(`/year/${CURRENT_YEAR}`);
       }
     } catch {
       setError(isRegister ? "Ошибка регистрации" : "Неверный email или пароль");

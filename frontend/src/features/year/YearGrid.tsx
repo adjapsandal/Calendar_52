@@ -26,7 +26,7 @@ function getCurrentDisplayPos(): number | undefined {
 
 export default function YearGrid() {
   const { year: yearParam } = useParams<{ year: string }>();
-  const yearNum = parseInt(yearParam ?? "2026");
+  const yearNum = parseInt(yearParam ?? "") || new Date().getFullYear();
   const { data, isLoading, error } = useYear(yearNum);
   const { data: settings } = useSettings();
   const currentPos = getCurrentDisplayPos();
