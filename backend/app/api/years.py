@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.core.auth import current_active_user
 from app.core.db import get_async_session
 from app.core.seed import seed_year
-from app.models import QuarterNote, Theme, User, Week, WeekMark, WeekTask, Year
+from app.models import QuarterNote, User, Week, WeekMark, Year
 from app.schemas.year import (
     QuarterBlock,
     QuarterNoteRead,

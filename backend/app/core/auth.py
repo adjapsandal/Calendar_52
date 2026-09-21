@@ -5,12 +5,11 @@ from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport
 from fastapi_users.authentication.strategy.jwt import JWTStrategy
 from fastapi_users.db import SQLAlchemyUserDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_session
 from app.models import User
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def get_user_db(session: AsyncSession = Depends(get_async_session)):

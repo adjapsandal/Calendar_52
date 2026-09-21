@@ -10,9 +10,9 @@ from app.models.models import (
     Theme,
     User,
     Week,
+    WeeklyReview,
     WeekMark,
     WeekTask,
-    WeeklyReview,
     Year,
 )
 

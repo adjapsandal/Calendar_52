@@ -253,7 +253,7 @@ async def chat(
         )
     except Exception as e:
         logger.error("Chat AI failed: %s (%.1fs)", str(e)[:200], time.time() - start)
-        raise HTTPException(503, "ИИ временно недоступен")
+        raise HTTPException(503, "ИИ временно недоступен") from e
 
     logger.info("Chat ok: user=%s %.1fs", str(user.id)[:8], time.time() - start)
 
